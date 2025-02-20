@@ -1,102 +1,80 @@
 pipeline {
-
-agent any
-
-tools {
-
-maven 'Maven 3.9.8'
-
-}
-environment {
-    docker_registry = 'sahajagarrepally/springboot'
-    DOCKERHUB_CREDENTIALS = credentials('docker-access')
-    dockerImageTag = "v1"
-}
-options {
-        timeout(time: 1, unit: 'HOURS')
-        disableConcurrentBuilds()
-}
-parameters {
-    booleanParam(name: 'CodeQualityCheck', defaultValue: false, description: 'is it required code quality check')
-    choice(name: 'publishImage', choices: ['yes', 'no'], description: 'is it required publish image')
-}
-stages {
-   stage ("Get Source Code") {
-    steps {
-            git branch: 'master', credentialsId: 'git_access', url:'https://github.com/Sahaja-surnoi/Fusion-BE.git'
-        }
-    } 
-   stage ("Build") {
-        steps {
-            sh 'mvn clean install -DskipTests'
-        }
+    agent any
+    environment {
+        SONAR_SCANNER_HOME = tool name: 'sonar-access'
     }
-   stage ("code quality") {
-        when {
-                expression{
-                    params.CodeQualityCheck == true
-                }
-        }
-        steps {
-            script {
-                withSonarQubeEnv(installationName: 'sonarqube', 
-                credentialsId: 'sonar_access') {
-                sh '''
-                    mvn clean install -Dmaven.test.skip=true -Psonar  sonar:sonar \
-                    -Dsonar.projectKey=springboot \
-                    -Dsonar.projectName='springboot' \
-                    -Dsonar.host.url=http://13.201.8.88:9000 \
-                    -Dsonar.token=sqp_cd0783fabb441ab1d15e40a5dedaad573dbc92e9
-                '''
-                }
+	
+    stages {
+        stage('checkout code from git hub') {
+            steps {
+             git branch: 'master', credentialsId: 'git-token', url: 'https://github.com/vidyasagar-surnoi/Hospital_frontEnd.git'   
             }
         }
-    }
-   stage('containerization') {
-        steps {
-            sh 'docker build -t $docker_registry:$dockerImageTag .'
-            }
-    }
-   stage('Publish Docker Image') {
-        when {
-                expression { 
-                    params.publishImage == 'yes'
-                }
-            }
-        input{
-            message "should we publish the image in Docker hub?"
-            ok "Yes, we should."
-
+          stage('bulid NPM and ng') {
+            steps {
+                      dir('/var/lib/jenkins/workspace/hospital-FE') {
+                    sh '''
+                    npm install
+                    ng build --configuration=production
+                      '''
+					   }
+     
         }
-        steps {
-            sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
-            sh "docker push $docker_registry:$dockerImageTag"
-        }       
+		}
+ 		  stage('static code analysis'){
+          steps{
+                 dir('/var/lib/jenkins/workspace/hospital-FE/') {
+                 script{
+            withSonarQubeEnv('sonar-access'){
+              withEnv(["PATH+SONAR=$SONAR_SCANNER_HOME/bin"]) {
+             	sh '''
+            		
+     mvn clean verify sonar:sonar \
+     -Dsonar.projectKey=hospital-3tier-arch \
+     -Dsonar.host.url=http://13.124.251.57:9000 \
+     -Dsonar.login=sqp_62c1bf5a639182f6bf9a390b90f9757fd5dedaef
+             	'''
+          
+                   }
+                    
+                     }
+        	    }
+            }
+       }
+  }
+       
+
+         stage('docker build run') {
+             steps {
+                 script {
+                 sh '''
+                
+                  docker build -t hospitalfeimg:v1 .
+                  docker run -d --name hospital-fe -p 8081:80 hospitalfeimg:v1
+                  ''' 
+                 }
+             }
+         }
+         stage('push to docker hub') {
+             steps {
+                 script {
+                      withDockerRegistry(credentialsId: 'docker-access') {
+                     
+                          sh '''
+                  docker tag hospitalfeimg:v1 sarusparks/hospitalfeimg:v1
+                  docker push sarusparks/hospitalfeimg:v1
+                  '''
+                      }
+                  } 
+             }
+         }
+		 stage('push to s3') {
+        steps{ 
+	
+            sh 'aws s3 cp /var/lib/jenkins/workspace/hospital-FE/dist/ s3://hospital-project/ --recursive --exclude "*" --include "3rdpartylicenses.txt"' 
+            sh 'aws s3 cp /var/lib/jenkins/workspace/hospital-FE/dist/browser s3://hospital-project/ --recursive --exclude "*" --include "*.*"'
     }
-    }
-    post { 
-    always { 
-        echo "\033[34mJob completed. Cleaning up workspace...\033[0m"
-        deleteDir()
-    }
-    success {
-        echo "\033[33mPipeline completed successfully. Performing success actions...\033[0m"
-        // Add additional actions here if needed, like sending success notifications
-    }
-    failure { 
-        echo "\033[35mPipeline failed. Triggering failure response...\033[0m"
-        // send notification
-    }
-    unstable {
-        echo "\033[34mPipeline marked as unstable. Reviewing issues...\033[0m"
-        // Send notification or take action for unstable builds, if needed
-    }
-    aborted {
-        echo "\033[33mPipeline was aborted. Clearing any partial artifacts...\033[0m"
-        // Any specific actions for aborted jobs
     }
 }
-
 }
-
  
